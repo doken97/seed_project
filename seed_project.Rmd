@@ -139,8 +139,8 @@ SplitData = split(SufVariety.df,SufVariety.df$Variety)
 SplitDataTrain = split(SufVarietyTrain.df,SufVarietyTrain.df$Variety)
 SplitDataTest = split(SufVarietyTest.df,SufVarietyTest.df$Variety)
 Model_Test_MSE = c()
+SplitData[[2]]
 ```
-
 ##Descriptive Analytics
 ```{r}
 #Map with Target Farm in Green Triangle, All the Farms in Yellow, and  11 Cluster Centers in Pink
@@ -561,84 +561,97 @@ Model_Test_MSE[7] = AvMSE.nn
 ##Winning Model
 ```{r}
 sqrt(Model_Test_MSE)
+##Tree model is the winner
+```
+
+#Prescriptive Analytics
+```{r}
+library(tree)
 #Group together ALL variety data points with cluster number = 10
 weather_set = newdata[which(newdata$Cluster_num==10),]
 
-#Changing the weather set to reflect the target farm
-weather_set[,c("Latitude","Longitude","Soil_Type","PH1","Clay1","Sand1","CEC")] = Seed.Eval[,c("Latitude","Longitude","Soil_Type","PH1","Clay1","Sand1","CEC")]
-
 #Sample 1000 rows of weather set with replacement
-weather_set = weather_set[sample(nrow(a), 1000,replace = TRUE),]
-
+weather_set = weather_set[sample(nrow(weather_set), 1000,replace = TRUE),]
+row.names(weather_set)<-NULL
 ##First the sufficient data sets--> varieties turn numeric
-tree.PredictSuf = list()
+tree.Predict = matrix(nrow = 1000,ncol =length(unique(newdata$Variety)))
+
 for (i in 1:length(unique(newdata$Variety))){
-  if(length(SplitData[[i]]$Variety !=0)){
-    a = weather_set
-    b = SplitData[[i]]
-    c = rbind(a,b)
-    c$Soil_Type = as.factor(c$Soil_Type)
-    c = c[-c(1:dim(a)[1]),]
-    c = c[sample(nrow(c), 1000,replace = TRUE),]
-    c[c("Temp_03","Temp_04","Temp_05","Temp_06","Temp_07","Temp_08","Temp_09","Median_Temp","Prec_03","Prec_04","Prec_05","Prec_06","Prec_07","Prec_08","Prec_09","Median_Prec","Rad_03","Rad_04","Rad_05","Rad_06","Rad_07","Rad_08","Rad_09","Median_Rad")] = a[c("Temp_03","Temp_04","Temp_05","Temp_06","Temp_07","Temp_08","Temp_09","Median_Temp","Prec_03","Prec_04","Prec_05","Prec_06","Prec_07","Prec_08","Prec_09","Median_Prec","Rad_03","Rad_04","Rad_05","Rad_06","Rad_07","Rad_08","Rad_09","Median_Rad")]
-    tree.Variety= tree(as.formula(paste(target,"~.")),SplitData[[i]][,c(predictors.treeSuf,target)])
+  a = weather_set
+  if(length(SplitData[[i]]$Variety) < 35){
+    # tree.Predict[,i] = rep(0,1000)
+    b = InsufVarietyTrain.df[which(as.numeric(InsufVariety.df$Variety) == InsufVariety.vector[i]),]
+    a[,c("Latitude","Longitude","Soil_Type","PH1","Clay1","Sand1","CEC")] = b[1,c("Latitude","Longitude","Soil_Type","PH1","Clay1","Sand1","CEC")]
+    tree.Variety= tree(as.formula(paste(target,"~.")),InsufVarietyTrain.df[,c(predictors.treeInsuf,target)])
     set.seed(1)
     crossV.Tree=cv.tree(tree.Variety,FUN=prune.tree)
     best.size = crossV.Tree$size[which(crossV.Tree$dev == min(crossV.Tree$dev))]
     pruned.Tree = prune.tree(tree.Variety,best = max(best.size,2))
-    tree.PredictSuf[[i]]=predict(pruned.Tree,newdata=c)
+    tree.Predict[,i]=predict(pruned.Tree,newdata=a[,predictors.treeInsuf])
+  }
+  else{
+    b = SplitDataTrain[[i]]
+    a[,c("Latitude","Longitude","Soil_Type","PH1","Clay1","Sand1","CEC")] = b[1,c("Latitude","Longitude","Soil_Type","PH1","Clay1","Sand1","CEC")]
+    tree.Variety= tree(as.formula(paste(target,"~.")),SplitDataTrain[[i]][,c(predictors.treeSuf,target)])
+    set.seed(1)
+    crossV.Tree=cv.tree(tree.Variety,FUN=prune.tree)
+    best.size = crossV.Tree$size[which(crossV.Tree$dev == min(crossV.Tree$dev))]
+    pruned.Tree = prune.tree(tree.Variety,best = max(best.size,2))
+    tree.Predict[,i]=predict(pruned.Tree,newdata=a[,predictors.treeSuf])
   }
 }
 
-tree.Sufmeans = c()
-tree.Sufvar = c()
-for (i in 1:83){
-  if (length(tree.PredictSuf[[i]]) != 0){
-    tree.Sufmeans[i] = mean(tree.PredictSuf[[i]])
-    tree.Sufvar[i] = var(tree.PredictSuf[[i]])
-  }
+#https://www.codingfinance.com/post/2018-05-31-portfolio-opt-in-r/
+#remove columns with zero variance
+colnames(tree.Predict) <- unique(newdata$Variety)
+deleted_columns = which(apply(tree.Predict, 2, var) == 0)
+tree.Predict <- tree.Predict[,-as.numeric(which(apply(tree.Predict, 2, var) == 0))]
+kept_columns = colnames(tree.Predict)
+tree.Predict <- as_tibble(tree.Predict)
+
+row.names(tree.Predict) <- NULL
+library(plotly)
+library(timetk)
+
+#mean and covariance matrix
+mean_yield <- colMeans(tree.Predict)
+cov_mat <- cov(tree.Predict)
+
+num_port <- 20000
+wts <- matrix(nrow = num_port,ncol = length(kept_columns))
+port_yield <- vector('numeric', length = num_port)
+port_risk <- vector('numeric', length = num_port)
+sharpe_ratio <- vector('numeric', length = num_port)
+
+for (i in seq_along(port_yield)){
+  wts[i,] <-runif(n = length(kept_columns))
+  wts[i,]<- wts[i,]/sum(wts[i,])
+  port_yield[i] <- sum(wts[i,]*mean_yield)
+  port_risk[i] <- sqrt(t(wts[i,]) %*% (cov_mat %*% wts[i,]))
+  sharpe_ratio[i] <- port_yield[i]/port_risk[i]
 }
 
-order(tree.Sufmeans, decreasing = TRUE)[1:40]
-sort(tree.Sufmeans,decreasing = TRUE)[1:40]
-order(tree.Sufvar, decreasing = FALSE)[1:40]
-sort(tree.Sufvar,decreasing = FALSE)[1:40]
+port_values <- tibble(yield = port_yield,risk = port_risk, SharpeRatio = sharpe_ratio)
+colnames(wts) <- kept_columns
+port_values<-tk_tbl(cbind(wts, port_values))
 
-tree.PredictInsuf = list()
-for(i in 1:length(InsufVariety.vector)){
-  a = weather_set
-  b = InsufVariety.df[which(as.numeric(InsufVariety.df$Variety) == InsufVariety.vector[i]),]
-  c = rbind(a,b)
-  c$Variety = as.factor(c$Variety)
-  c$Soil_Type = as.factor(c$Soil_Type)
-  c = c[-c(1:dim(a)[1]),]
-  c = c[sample(nrow(c), 1000,replace = TRUE),]
-  c[c("Temp_03","Temp_04","Temp_05","Temp_06","Temp_07","Temp_08","Temp_09","Median_Temp","Prec_03","Prec_04","Prec_05","Prec_06","Prec_07","Prec_08","Prec_09","Median_Prec","Rad_03","Rad_04","Rad_05","Rad_06","Rad_07","Rad_08","Rad_09","Median_Rad")] = a[c("Temp_03","Temp_04","Temp_05","Temp_06","Temp_07","Temp_08","Temp_09","Median_Temp","Prec_03","Prec_04","Prec_05","Prec_06","Prec_07","Prec_08","Prec_09","Median_Prec","Rad_03","Rad_04","Rad_05","Rad_06","Rad_07","Rad_08","Rad_09","Median_Rad")]
-  tree.Variety = tree(as.formula(paste(target,"~.")),InsufVariety.df[,c(predictors.treeSuf,target)])
-  set.seed(1)
-  crossV.Tree =cv.tree(tree.Variety,FUN=prune.tree)
-  best.size = crossV.Tree$size[which(crossV.Tree$dev == min(crossV.Tree$dev))]
-  pruned.Tree = prune.tree(tree.Variety,best = max(best.size,2))
-  tree.PredictInsuf[[i]]=predict(pruned.Tree,newdata=c)
-}
+min_var <- port_values[which.min(port_values$risk),]
+max_sr <- port_values[which.max(port_values$SharpeRatio),]
+min_var
+max_sr
 
-tree.Insufmeans = c()
-tree.Insufvar = c()
-for (i in 1:99){
-  if (length(tree.PredictInsuf[[i]]) != 0){
-    tree.Insufmeans[i] = mean(tree.PredictInsuf[[i]])
-    tree.Insufvar[i] = var(tree.PredictInsuf[[i]])
-  }
-}
+p <- port_values %>%
+  ggplot(aes(x = risk, y = yield, color = sharpe_ratio)) +
+  geom_point() +
+  theme_classic() +
+  labs(x = 'Risk',
+       y = 'Yield',
+       title = "Portfolio Optimization & Efficient Frontier") +
+  geom_point(aes(x = risk,
+                 y = yield), data = min_var, color = 'red') +
+  geom_point(aes(x =risk,
+                 y = yield), data = max_sr, color = 'red') +
+ annotate('text', x = 1, y = 56.3, label = "Tangency/Min Var Portfolio",size = 2,color = 'red')
 
-sort(tree.Insufmeans, decreasing = TRUE)
-order(tree.Insufmeans, decreasing = TRUE)
-sort(tree.Insufvar, decreasing = FALSE)[-(1:32)]
-order(tree.Insufvar,decreasing = FALSE)[-(1:32)]
-#Seed Winners (omitting 93 due to higher variance)
-#Heuristic Method
-#58 (61.97, 11.45), 60(61.97,11.45), 93(61.8, 14.86), 35(60.9, 10.25), 61(60.90,10.25)
-
-unique(newdata$Variety[newdata$Variety%in%SufVariety.df$Variety == FALSE])[c(58,60,35,61)]
-##Recomendation: V206, V142, V28, and V146 are the winners!
+ggplotly(p)
 ```
